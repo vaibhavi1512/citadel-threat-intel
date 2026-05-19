@@ -661,6 +661,13 @@ class LocalMonitoringStore:
                 }
             )
 
+        org_ranked = sorted(
+            organization_counter.items(),
+            key=lambda item: (-item[1], str(item[0]).lower()),
+        )
+        organization_distribution = dict(org_ranked)
+        organizations = [name for name, _ in org_ranked]
+
         return {
             "case_count": len(cases),
             "active_cases": sum(1 for case in cases if case.get("case_status") not in {"closed", "resolved"}),
@@ -680,8 +687,8 @@ class LocalMonitoringStore:
             "exposure_distribution": dict(data_counter.most_common(10)),
             "sensitive_data_distribution": dict(sensitive_counter.most_common(10)),
             "business_unit_distribution": dict(business_units),
-            "organization_distribution": dict(organization_counter.most_common(25)),
-            "organizations": [name for name, _ in organization_counter.most_common(25)],
+            "organization_distribution": organization_distribution,
+            "organizations": organizations,
             "timeline": timeline,
             "watchlist_health": watchlist_health,
             "mean_time_to_review_hours": round(sum(open_review_durations) / len(open_review_durations), 2)

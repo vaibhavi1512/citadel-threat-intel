@@ -620,6 +620,20 @@ def _build_appendix(styles: Any, cases: list[dict[str, Any]]) -> list[Any]:
 
 def _build_verification_section(styles: Any, verification_details: dict[str, Any]) -> list[Any]:
     elements = [Paragraph("Report Authenticity Verification", styles["CitadelHeading"])]
+    signature_status = str(verification_details.get("signature_status") or "").strip().lower()
+    signature_value = verification_details.get("signature_short")
+    has_signing_metadata = bool(
+        verification_details.get("signing_algorithm") or verification_details.get("public_key_fingerprint_short")
+    )
+    if not signature_value:
+        if signature_status == "pending":
+            signature_value = "Detached signature available in verification portal"
+        elif signature_status == "signed":
+            signature_value = "Detached signature on record"
+        elif has_signing_metadata:
+            signature_value = "Detached signature available in verification portal"
+        else:
+            signature_value = "Unsigned"
     if verification_details.get("signed"):
         elements.append(
             Paragraph(
@@ -640,7 +654,7 @@ def _build_verification_section(styles: Any, verification_details: dict[str, Any
         ["Report ID", verification_details.get("report_id") or "Unavailable"],
         ["Generated timestamp", verification_details.get("generated_at") or "Unavailable"],
         ["PDF SHA256 hash", verification_details.get("pdf_sha256_short") or "Available on verification portal"],
-        ["Digital signature", verification_details.get("signature_short") or "Unsigned"],
+        ["Digital signature", signature_value],
         ["Signing algorithm", verification_details.get("signing_algorithm") or "Unsigned"],
         ["Key fingerprint", verification_details.get("public_key_fingerprint_short") or "Unavailable"],
         ["Verification URL", verification_details.get("verification_url") or "Unavailable"],

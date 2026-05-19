@@ -88,16 +88,22 @@ def prepare_report_verification_details(
     public_verification_url: str,
 ) -> dict[str, Any]:
     signing_status = get_signing_runtime_status()
+    signature_status = "pending" if signing_status.get("enabled") else "unsigned"
+    signature_short = None
+    if signing_status.get("available"):
+        signature_short = "Detached signature available in verification portal"
+    elif signature_status == "unsigned":
+        signature_short = "Unsigned"
     return {
         "signed": bool(signing_status.get("available")),
         "report_id": report_id,
         "generated_at": created_at,
         "pdf_sha256_short": None,
-        "signature_short": None,
+        "signature_short": signature_short,
         "verification_url": public_verification_url,
         "signing_algorithm": signing_status.get("algorithm"),
         "public_key_fingerprint_short": mask_value(signing_status.get("public_key_fingerprint"), prefix=16, suffix=12),
-        "signature_status": "pending" if signing_status.get("enabled") else "unsigned",
+        "signature_status": signature_status,
         "warning": signing_status.get("warning"),
     }
 

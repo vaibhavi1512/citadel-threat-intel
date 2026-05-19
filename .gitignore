@@ -1,18 +1,57 @@
+# --- Python ---
 __pycache__/
 *.py[cod]
 *.log
-.env
 .venv/
 venv/
 
+# --- Secrets & credentials (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.session
+*.session-journal
+.streamlit/secrets.toml
+
+# Report signing keys (generate locally; see README)
+keys/
+
+# --- Node / frontend ---
+node_modules/
+frontend-react/node_modules/
+frontend-react/dist/
+frontend-react/.env
+frontend-react/.env.*
+!frontend-react/.env.example
+
+# --- Local runtime data (cases, watchlists, signed reports) ---
+data/monitoring_state.json
+data/*.json
+data/runtime*.pdf
+data/*_report*.pdf
+data/exports/
+
+# Large / generated datasets (keep only small demo CSVs if needed)
 data/raw_data.csv
 data/processed_data.csv
 
+# --- ML artifacts (download or train locally) ---
 models/*.joblib
 models/training_metrics.json
 models/distilbert_threat/
 
+# --- Caches & OS ---
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.streamlit/secrets.toml
+.cache/
+*.tmp
+.DS_Store
+Thumbs.db
+
+# --- IDE ---
+.idea/
+.vscode/
+!.vscode/extensions.json
