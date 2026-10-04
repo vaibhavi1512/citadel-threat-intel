@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from utils.config import WATCHLIST_MIN_INTERVAL_SECONDS, WEBHOOK_TIMEOUT_SECONDS
+from utils.config import WATCHLIST_MIN_INTERVAL_SECONDS, WEBHOOKS_ENABLED, WEBHOOK_TIMEOUT_SECONDS
 
 
 def _now_iso() -> str:
@@ -168,7 +168,7 @@ class MonitoringScheduler:
         collection_summary: dict[str, Any] | None,
     ) -> None:
         webhook_url = str(watchlist.get("webhook_url") or "").strip()
-        if not webhook_url or not updates:
+        if not WEBHOOKS_ENABLED or not webhook_url or not updates:
             return
 
         payload = {

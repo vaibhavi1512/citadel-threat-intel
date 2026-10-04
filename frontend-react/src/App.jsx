@@ -9,6 +9,8 @@ import Feed from './pages/Feed'
 import Upload from './pages/Upload'
 import VerifyReport from './pages/VerifyReport'
 import { getHealth } from './services/api'
+import { LoginPage, ProtectedRoute, RegisterPage } from './auth/AuthPages'
+import { useAuth } from './auth/useAuth'
 
 function BackgroundParticles() {
   const particles = Array.from({ length: 14 }, (_, index) => ({
@@ -47,6 +49,7 @@ function BackgroundParticles() {
 
 function App() {
   const location = useLocation()
+  const { user, logout } = useAuth()
   const [backendWarning, setBackendWarning] = useState('')
 
   useEffect(() => {
@@ -73,6 +76,7 @@ function App() {
     }
   }, [])
 
+  const isAuthPage = location.pathname === '/login' || location.pathname === '/register'
   return (
     <div className="min-h-screen overflow-hidden bg-[#020617] text-[#E2E8F0]">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
@@ -86,8 +90,8 @@ function App() {
       </div>
 
       <div className="relative mx-auto flex min-h-screen w-full max-w-[1600px] flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <Navbar />
-        {backendWarning && (
+        {isAuthPage ? <div className="glass-card mx-auto mt-4 w-full max-w-lg rounded-2xl p-4 text-center text-sm text-cyan-100">C I T A D E L <span className="ml-2 text-slate-400">Secure intelligence workspace</span></div> : user ? <Navbar user={user} onLogout={logout} /> : null}
+        {!isAuthPage && backendWarning && (
           <div className="mt-4 rounded-2xl border border-[#FF3B3B]/35 bg-[#FF3B3B]/10 px-4 py-3 text-sm text-[#FECACA] shadow-[0_0_28px_rgba(255,59,59,0.08)]">
             {backendWarning}
           </div>
@@ -97,12 +101,16 @@ function App() {
         >
           <AnimatePresence mode="wait">
             <Routes location={location} key={location.pathname}>
-              <Route path="/" element={<Navigate to="/analyzer" replace />} />
-              <Route path="/analyzer" element={<Analyzer />} />
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/monitor" element={<Feed />} />
-              <Route path="/feed" element={<Navigate to="/monitor" replace />} />
-              <Route path="/upload" element={<Upload />} />
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/register" element={<RegisterPage />} />
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/analyzer" element={<ProtectedRoute><Analyzer /></ProtectedRoute>} />
+              <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+              <Route path="/monitor" element={<ProtectedRoute><Feed /></ProtectedRoute>} />
+              <Route path="/feed" element={<ProtectedRoute><Navigate to="/monitor" replace /></ProtectedRoute>} />
+              <Route path="/cases" element={<ProtectedRoute><Navigate to="/monitor" replace /></ProtectedRoute>} />
+              <Route path="/reports" element={<ProtectedRoute><Navigate to="/dashboard" replace /></ProtectedRoute>} />
+              <Route path="/upload" element={<ProtectedRoute><Upload /></ProtectedRoute>} />
               <Route path="/verify/:reportId" element={<VerifyReport />} />
             </Routes>
           </AnimatePresence>

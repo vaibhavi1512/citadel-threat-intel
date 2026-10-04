@@ -1,4 +1,5 @@
 import os
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -19,14 +20,19 @@ PROCESSED_DATA_PATH = DATA_DIR / "processed_data.csv"
 PRIMARY_MODEL_PATH = MODELS_DIR / "tfidf_logreg.joblib"
 SECONDARY_MODEL_DIR = MODELS_DIR / "distilbert_threat"
 METRICS_PATH = MODELS_DIR / "training_metrics.json"
-MONITORING_STATE_PATH = DATA_DIR / "monitoring_state.json"
+MONITORING_STATE_PATH = Path(os.getenv("MONITORING_STATE_PATH", str(DATA_DIR / "monitoring_state.json")))
+AUTH_USERS_PATH = Path(os.getenv("AUTH_USERS_PATH", str(DATA_DIR / "auth_users.json")))
 ORG_PROFILES_PATH = DATA_DIR / "organization_profiles.json"
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "dark_web_threat_intel")
 MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "analyses")
-MONGO_ENABLED = os.getenv("MONGO_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
-BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8001") or 8001)
+MONGO_ENABLED = os.getenv("MONGO_ENABLED", "false").strip().lower() not in {"0", "false", "no", "off"}
+BACKEND_PORT = int(os.getenv("PORT") or os.getenv("BACKEND_PORT", "8001") or 8001)
+MODEL_AUTO_TRAIN_PRIMARY = os.getenv("MODEL_AUTO_TRAIN_PRIMARY", "true").strip().lower() in {"1", "true", "yes", "on"}
+MODEL_AUTO_TRAIN_SECONDARY = os.getenv("MODEL_AUTO_TRAIN_SECONDARY", "true").strip().lower() in {"1", "true", "yes", "on"}
+MODEL_ALLOW_RUNTIME_DOWNLOADS = os.getenv("MODEL_ALLOW_RUNTIME_DOWNLOADS", "true").strip().lower() in {"1", "true", "yes", "on"}
+WEBHOOKS_ENABLED = os.getenv("WEBHOOKS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 WATCHLIST_DEFAULT_INTERVAL_SECONDS = int(os.getenv("WATCHLIST_DEFAULT_INTERVAL_SECONDS", "300") or 300)
 WATCHLIST_MIN_INTERVAL_SECONDS = int(os.getenv("WATCHLIST_MIN_INTERVAL_SECONDS", "60") or 60)
 WEBHOOK_TIMEOUT_SECONDS = float(os.getenv("WEBHOOK_TIMEOUT_SECONDS", "10") or 10)
@@ -68,8 +74,32 @@ REPORT_SIGNING_DEV_AUTO_GENERATE = os.getenv("REPORT_SIGNING_DEV_AUTO_GENERATE",
 REPORT_PRIVATE_KEY_PATH = Path(os.getenv("REPORT_PRIVATE_KEY_PATH", str(KEYS_DIR / "private_key.pem")))
 REPORT_PUBLIC_KEY_PATH = Path(os.getenv("REPORT_PUBLIC_KEY_PATH", str(KEYS_DIR / "public_key.pem")))
 REPORT_SIGNED_REPORT_EXPIRY_DAYS = int(os.getenv("REPORT_SIGNED_REPORT_EXPIRY_DAYS", "30") or 30)
-REPORT_VERIFICATION_BASE_URL = os.getenv("REPORT_VERIFICATION_BASE_URL", "http://127.0.0.1:5173")
+ENVIRONMENT = (os.getenv("ENVIRONMENT") or os.getenv("ENV") or "").strip().lower()
+_environment = ENVIRONMENT
+_default_verification_url = "" if _environment in {"prod", "production"} else "http://127.0.0.1:5173"
+REPORT_VERIFICATION_BASE_URL = os.getenv("REPORT_VERIFICATION_BASE_URL", _default_verification_url)
 REPORT_VERIFICATION_CACHE_TTL_SECONDS = int(os.getenv("REPORT_VERIFICATION_CACHE_TTL_SECONDS", "60") or 60)
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+def resolve_jwt_secret(environment: str, configured_secret: str | None) -> str:
+    """Use a secure ephemeral key only for explicitly selected local development."""
+    secret = (configured_secret or "").strip()
+    if secret:
+        return secret
+    if environment.strip().lower() in {"development", "dev", "local"}:
+        return secrets.token_urlsafe(48)
+    return ""
+
+
+JWT_SECRET_KEY = resolve_jwt_secret(ENVIRONMENT, os.getenv("JWT_SECRET_KEY"))
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60") or 60)
 
 PLATFORM_REPUTATION_SCORES = {
     "Telegram": 0.72,

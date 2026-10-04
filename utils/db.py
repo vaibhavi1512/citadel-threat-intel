@@ -22,7 +22,7 @@ class MongoManager:
         if not MONGO_ENABLED:
             self.connected = False
             self.collection = None
-            self.warning = "MongoDB disabled; using in-memory fallback storage."
+            self.warning = "MongoDB disabled; using local JSON fallback storage."
             return
 
         try:

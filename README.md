@@ -97,6 +97,12 @@ pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 ```
 
+The core TF-IDF analysis works without the optional transformer models. To enable
+the larger secondary DistilBERT and sentence-transformer models in a local
+environment, install them with `pip install -r requirements-ml.txt`, then set
+`MODEL_AUTO_TRAIN_SECONDARY=true` and `MODEL_ALLOW_RUNTIME_DOWNLOADS=true` in
+your local `.env` if you want the model downloaded/trained automatically.
+
 4. Create a `.env` file and configure the providers you want to use.
 
 Example environment values:
@@ -122,6 +128,12 @@ LEAKIX_API_KEY=<leakix_api_key>
 ```bash
 uvicorn backend.main:app --host 0.0.0.0 --port 8001
 ```
+
+For authenticated local development, set `JWT_SECRET_KEY` in `.env` to a randomly generated secret of at least 32 characters. Never use the example placeholder outside local setup. Authentication uses `JWT_ALGORITHM=HS256`, `ACCESS_TOKEN_EXPIRE_MINUTES=60`, and a separate `AUTH_USERS_PATH` JSON file (default `data/auth_users.json`). User records contain Argon2 password hashes only. The JSON file is excluded from Git.
+
+The initial browser client stores only the short lived bearer token in `sessionStorage`; logout clears it. This supports the separately hosted Vercel/Render setup without cross-site cookies, but JavaScript can access the token, so it is less resistant to XSS than an HttpOnly cookie. Use HTTPS and a restrictive `CORS_ORIGINS` list containing the deployed frontend origin. Render Free local files are ephemeral: accounts may be lost when the service restarts or redeploys. Use persistent database storage before relying on identities.
+
+Public backend routes are `/health`, `/auth/register`, `/auth/login`, API docs, and signed report verification (`/verify/{report_id}` plus `/api/v1/verify/report/{report_id}` and its upload verification route). Report creation/export and every other Citadel data route, including `/events/stream`, require `Authorization: Bearer <token>`. SSE uses `fetch` with that header and reads the response stream; native `EventSource` cannot set bearer headers. Failed logins are limited per process/IP, so use an external rate limiter before a multi-instance public deployment. All authenticated users currently share the existing CITADEL monitoring workspace; data ownership is not partitioned per account.
 
 ## Run The React Frontend
 

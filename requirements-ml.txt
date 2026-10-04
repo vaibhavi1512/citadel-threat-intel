@@ -1,0 +1,5 @@
+# Optional, large model stack for local experimentation and secondary inference.
+-r requirements.txt
+sentence-transformers
+transformers
+torch

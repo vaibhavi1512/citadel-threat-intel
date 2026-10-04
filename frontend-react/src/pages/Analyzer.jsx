@@ -129,7 +129,7 @@ function Analyzer() {
     } catch (apiError) {
       setToast(
         apiError?.response?.data?.detail ||
-          'Backend is unreachable. Start the FastAPI server at http://127.0.0.1:8001.',
+          'Backend is unreachable. Check the API URL configuration and backend service.',
       )
       setResult(null)
     } finally {

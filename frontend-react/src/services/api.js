@@ -1,16 +1,15 @@
 import axios from 'axios'
 
-const DEFAULT_BACKEND_PORT = import.meta.env.VITE_API_PORT || '8001'
+const DEFAULT_BACKEND_PORT = import.meta.env.VITE_API_PORT || '8107'
 
 export function resolveApiBaseUrl() {
   const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL
   if (configuredBaseUrl) {
-    return configuredBaseUrl
+    return configuredBaseUrl.replace(/\/+$/, '')
   }
 
-  if (typeof window !== 'undefined') {
-    const { protocol, hostname } = window.location
-    return `${protocol}//${hostname}:${DEFAULT_BACKEND_PORT}`
+  if (import.meta.env.PROD) {
+    return ''
   }
 
   return `http://127.0.0.1:${DEFAULT_BACKEND_PORT}`
@@ -20,6 +19,33 @@ const api = axios.create({
   baseURL: resolveApiBaseUrl(),
   timeout: 15000,
 })
+
+export const AUTH_TOKEN_KEY = 'citadel_access_token'
+
+api.interceptors.request.use((config) => {
+  const token = typeof window !== 'undefined' ? window.sessionStorage.getItem(AUTH_TOKEN_KEY) : null
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+api.interceptors.response.use((response) => response, (error) => {
+  const requestUrl = error.config?.url || ''
+  if (error.response?.status === 401 && !requestUrl.startsWith('/auth/login') && !requestUrl.startsWith('/auth/register')) {
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.removeItem(AUTH_TOKEN_KEY)
+      window.dispatchEvent(new Event('citadel:session-expired'))
+    }
+  }
+  return Promise.reject(error)
+})
+
+export const registerUser = async (payload) => (await api.post('/auth/register', payload)).data
+export const loginUser = async (payload) => (await api.post('/auth/login', payload)).data
+export const getCurrentUser = async () => (await api.get('/auth/me')).data
+export const getStoredToken = () => (typeof window === 'undefined' ? null : window.sessionStorage.getItem(AUTH_TOKEN_KEY))
+export const storeToken = (token) => window.sessionStorage.setItem(AUTH_TOKEN_KEY, token)
+export const clearToken = () => window.sessionStorage.removeItem(AUTH_TOKEN_KEY)
+export const getAuthToken = getStoredToken
 
 function parseFilenameFromDisposition(headerValue) {
   if (!headerValue) {

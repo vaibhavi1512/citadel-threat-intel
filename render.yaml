@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: citadel-api
+    runtime: python
+    plan: free
+    healthCheckPath: /health
+    buildCommand: >-
+      pip install -r requirements.txt
+      && python -m spacy download en_core_web_sm
+      && python -c "from utils.model_manager import ModelManager; ModelManager().train_primary_model()"
+    startCommand: python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: MONGO_ENABLED
+        value: "false"
+      - key: MODEL_AUTO_TRAIN_PRIMARY
+        value: "false"
+      - key: MODEL_AUTO_TRAIN_SECONDARY
+        value: "false"
+      - key: MODEL_ALLOW_RUNTIME_DOWNLOADS
+        value: "false"
+      - key: WEBHOOKS_ENABLED
+        value: "false"
+      - key: REPORTING_ENABLED
+        value: "false"
+      - key: REPORT_SIGNING_ENABLED
+        value: "false"
+      - key: ENVIRONMENT
+        value: production
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"
+      - key: AUTH_USERS_PATH
+        value: data/auth_users.json

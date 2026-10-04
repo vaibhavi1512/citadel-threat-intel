@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,13 @@ from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
-from utils.config import METRICS_PATH, PRIMARY_MODEL_PATH, SECONDARY_MODEL_DIR
+from utils.config import (
+    METRICS_PATH,
+    MODEL_AUTO_TRAIN_PRIMARY,
+    MODEL_AUTO_TRAIN_SECONDARY,
+    PRIMARY_MODEL_PATH,
+    SECONDARY_MODEL_DIR,
+)
 from utils.data_pipeline import DataPipeline
 
 
@@ -48,11 +55,21 @@ class ModelManager:
         if self.primary_pipeline is not None:
             return
         if PRIMARY_MODEL_PATH.exists():
-            loaded = joblib.load(PRIMARY_MODEL_PATH)
-            self.primary_pipeline = loaded["pipeline"]
-            self.training_metrics = loaded.get("metrics", {})
+            try:
+                loaded = joblib.load(PRIMARY_MODEL_PATH)
+                self.primary_pipeline = loaded["pipeline"]
+                self.training_metrics = loaded.get("metrics", {})
+                return
+            except Exception:
+                self.training_metrics = {"status": "unavailable", "reason": "saved primary model could not be loaded"}
+        if not MODEL_AUTO_TRAIN_PRIMARY:
+            if not self.training_metrics:
+                self.training_metrics = {"status": "unavailable", "reason": "saved primary model not found"}
             return
-        self.train_primary_model()
+        try:
+            self.train_primary_model()
+        except Exception:
+            self.training_metrics = {"status": "unavailable", "reason": "primary model could not be trained"}
 
     def train_primary_model(self) -> dict[str, Any]:
         dataset = self.data_pipeline.load_or_create_processed_dataset()
@@ -107,7 +124,7 @@ class ModelManager:
     def predict_primary(self, text: str) -> PredictionResult:
         self.load_primary_model()
         if self.primary_pipeline is None:
-            raise RuntimeError("Primary model is unavailable.")
+            return self._fallback_primary_prediction(text)
 
         probabilities_array = self.primary_pipeline.predict_proba([text])[0]
         labels = list(self.primary_pipeline.classes_)
@@ -123,6 +140,36 @@ class ModelManager:
             explanation_terms=explanation_terms,
         )
 
+    @staticmethod
+    def _fallback_primary_prediction(text: str) -> PredictionResult:
+        """Keep analysis available when the optional saved classifier is missing."""
+        from utils.config import LABELS, THREAT_TEMPLATES
+
+        tokens = set(re.findall(r"[a-z0-9]+", str(text).lower()))
+        scores: dict[str, float] = {}
+        matches: dict[str, list[str]] = {}
+        for label in LABELS:
+            label_terms = {
+                token
+                for example in THREAT_TEMPLATES.get(label, [])
+                for token in re.findall(r"[a-z0-9]+", example.lower())
+            }
+            hits = sorted(tokens & label_terms)
+            matches[label] = hits
+            scores[label] = float(len(hits))
+        if not any(scores.values()):
+            scores["Normal"] = 1.0
+        total = sum(scores.values()) or 1.0
+        probabilities = {label: score / total for label, score in scores.items()}
+        label = max(probabilities, key=probabilities.get)
+        confidence = probabilities[label]
+        return PredictionResult(
+            label=label,
+            confidence=confidence,
+            probabilities=probabilities,
+            explanation_terms=[{"term": term, "weight": 1.0} for term in matches[label][:8]],
+        )
+
     def load_secondary_model(self) -> None:
         if self.secondary_status != "uninitialized":
             return
@@ -135,16 +182,26 @@ class ModelManager:
 
         label_file = SECONDARY_MODEL_DIR / "labels.json"
         if SECONDARY_MODEL_DIR.exists() and label_file.exists():
-            self.secondary_tokenizer = AutoTokenizer.from_pretrained(SECONDARY_MODEL_DIR)
-            self.secondary_model = AutoModelForSequenceClassification.from_pretrained(SECONDARY_MODEL_DIR)
-            self.secondary_labels = json.loads(label_file.read_text(encoding="utf-8"))
-            self.secondary_status = "ready"
+            try:
+                self.secondary_tokenizer = AutoTokenizer.from_pretrained(SECONDARY_MODEL_DIR, local_files_only=True)
+                self.secondary_model = AutoModelForSequenceClassification.from_pretrained(
+                    SECONDARY_MODEL_DIR,
+                    local_files_only=True,
+                )
+                self.secondary_labels = json.loads(label_file.read_text(encoding="utf-8"))
+                self.secondary_status = "ready"
+            except Exception:
+                self.secondary_status = "unavailable: saved secondary model could not be loaded"
+            return
+
+        if not MODEL_AUTO_TRAIN_SECONDARY:
+            self.secondary_status = "unavailable: no saved secondary model configured"
             return
 
         try:
             self.train_secondary_model()
-        except Exception as exc:  # pragma: no cover - depends on optional stack
-            self.secondary_status = f"unavailable: {exc}"
+        except Exception:  # pragma: no cover - depends on optional stack
+            self.secondary_status = "unavailable: secondary model training failed"
 
     def train_secondary_model(self, epochs: int = 1) -> None:
         try:
@@ -155,8 +212,8 @@ class ModelManager:
                 Trainer,
                 TrainingArguments,
             )
-        except Exception as exc:  # pragma: no cover - depends on optional stack
-            self.secondary_status = f"transformers_not_available: {exc}"
+        except Exception:  # pragma: no cover - depends on optional stack
+            self.secondary_status = "transformers_not_available"
             return
 
         dataset = self.data_pipeline.load_or_create_processed_dataset()

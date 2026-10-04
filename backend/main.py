@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import logging
 from datetime import datetime, timezone
 from queue import Empty
 from pathlib import Path
@@ -8,8 +9,10 @@ from typing import Any
 import uuid
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 
@@ -17,7 +20,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from utils.config import BACKEND_PORT, WATCHLIST_DEFAULT_INTERVAL_SECONDS
+from utils.config import BACKEND_PORT, CORS_ORIGINS, WATCHLIST_DEFAULT_INTERVAL_SECONDS
 from utils.monitoring_runtime import MonitoringEventBus, MonitoringScheduler
 from utils.nlp_engine import ThreatIntelligenceEngine
 from utils.reporting import filter_cases, generate_pdf_report
@@ -30,6 +33,7 @@ from services.cyber_cell_reporting import (
 )
 from services.cyber_cell_reporting.email_sender import CyberCellEmailError
 from security.report_signing import build_verification_url
+from backend.auth import resolve_token, router as auth_router, validate_auth_configuration
 from services.signed_reports import (
     build_public_verification_response,
     create_signed_report_record,
@@ -45,9 +49,47 @@ app = FastAPI(
     description="AI-powered threat intelligence service for dark web-style text analysis.",
 )
 
+logger = logging.getLogger(__name__)
+
+@app.middleware("http")
+async def require_auth_for_application(request: Request, call_next):
+    """Keep health, auth, docs and CORS preflight public; secure all app data APIs."""
+    path = request.url.path
+    public_report_verification = path.startswith("/api/v1/verify/report/") and (
+        (request.method == "GET" and path.count("/") == 5)
+        or (request.method == "POST" and path.count("/") == 6 and path.endswith("/upload"))
+    )
+    public = (
+        request.method == "OPTIONS"
+        or path == "/health"
+        or path in {"/auth/register", "/auth/login", "/docs", "/openapi.json", "/redoc"}
+        or path.startswith("/docs/")
+        # Signed report verification is an intentional public, share-by-link feature.
+        or (path.startswith("/verify/") and request.method == "GET" and path.count("/") == 2)
+        or public_report_verification
+    )
+    if public:
+        return await call_next(request)
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    user = resolve_token(token) if scheme.lower() == "bearer" and token else None
+    if user is None:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            {"detail": "Authentication required."},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    request.state.current_user = user
+    return await call_next(request)
+
+
+# Register CORS after the auth middleware so it wraps all responses, including
+# authentication/configuration errors returned by inner middleware and routes.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS or ["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=[
@@ -57,6 +99,19 @@ app.add_middleware(
         "Content-Disposition",
     ],
 )
+
+
+app.include_router(auth_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_auth_validation_errors(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/auth/"):
+        # Pydantic's default 422 body includes rejected input values; never echo passwords.
+        return JSONResponse({"detail": "Invalid authentication request."}, status_code=422)
+    from fastapi.exception_handlers import request_validation_exception_handler
+
+    return await request_validation_exception_handler(request, exc)
 
 engine = ThreatIntelligenceEngine()
 event_bus = MonitoringEventBus()
@@ -73,12 +128,12 @@ class AnalyzeResponse(BaseModel):
     confidence_score: float
     timestamp: str
     patterns: dict[str, list[str]]
-    entities: list[dict[str, str]]
+    entities: list[dict[str, Any]]
     explanation: list[str]
     primary_classification: dict[str, Any]
     secondary_classification: dict[str, Any]
     semantic_analysis: dict[str, Any]
-    enriched_entities: list[dict[str, str]]
+    enriched_entities: list[dict[str, Any]]
     multilingual_analysis: dict[str, Any]
     slang_decoder: dict[str, Any]
     correlation: dict[str, Any]
@@ -115,6 +170,7 @@ class CaseUpdateRequest(BaseModel):
 
 @app.on_event("startup")
 def startup_event() -> None:
+    validate_auth_configuration()
     engine.bootstrap()
     scheduler.start()
 
@@ -147,7 +203,8 @@ def analyze(payload: AnalyzeRequest) -> dict[str, Any]:
             "alert_priority": result["alert_priority"],
         }
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+        logger.exception("Analysis failed")
+        raise HTTPException(status_code=500, detail="Analysis failed.") from exc
 
 
 @app.get("/alerts")
@@ -156,7 +213,8 @@ def get_alerts(limit: int = 100) -> dict[str, Any]:
         alerts = engine.get_alerts(limit=limit)
         return {"count": len(alerts), "alerts": alerts, "warning": engine.db.warning}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Alert retrieval failed: {exc}") from exc
+        logger.exception("Alert retrieval failed")
+        raise HTTPException(status_code=500, detail="Alert retrieval failed.") from exc
 
 
 @app.get("/stats")
@@ -164,7 +222,8 @@ def get_stats() -> dict[str, Any]:
     try:
         return engine.get_stats()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Stats retrieval failed: {exc}") from exc
+        logger.exception("Stats retrieval failed")
+        raise HTTPException(status_code=500, detail="Stats retrieval failed.") from exc
 
 
 @app.get("/monitoring/stats")
@@ -172,17 +231,13 @@ def get_monitoring_stats() -> dict[str, Any]:
     try:
         return engine.db.get_monitoring_stats()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Monitoring statistics retrieval failed: {exc}") from exc
+        logger.exception("Monitoring statistics retrieval failed")
+        raise HTTPException(status_code=500, detail="Monitoring statistics retrieval failed.") from exc
 
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
-    monitoring = engine.db.get_monitoring_stats()
-    return {
-        "status": "ok",
-        "scheduler": "running",
-        "watchlists": str(monitoring.get("enabled_watchlists", 0)),
-    }
+    return {"status": "healthy"}
 
 
 @app.get("/verify/{report_id}")
@@ -209,7 +264,8 @@ def collect_intelligence(payload: CollectIntelRequest) -> dict[str, Any]:
             )
         return response
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"External intelligence collection failed: {exc}") from exc
+        logger.exception("External intelligence collection failed")
+        raise HTTPException(status_code=500, detail="External intelligence collection failed.") from exc
 
 
 @app.get("/cases")
@@ -218,7 +274,8 @@ def list_cases(limit: int = 200, status: str | None = None, priority: str | None
         cases = engine.db.list_cases(limit=limit, status=status, priority=priority, search=search)
         return {"count": len(cases), "cases": cases}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Case retrieval failed: {exc}") from exc
+        logger.exception("Case retrieval failed")
+        raise HTTPException(status_code=500, detail="Case retrieval failed.") from exc
 
 
 @app.get("/cases/export")
@@ -286,7 +343,8 @@ def export_pdf_report(
         )
         return response
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"PDF report export failed: {exc}") from exc
+        logger.exception("PDF report export failed")
+        raise HTTPException(status_code=500, detail="PDF report export failed.") from exc
 
 
 @app.get("/cases/{case_id}")
@@ -371,7 +429,8 @@ def run_watchlist_now(watchlist_id: str) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Watchlist run failed: {exc}") from exc
+        logger.exception("Watchlist run failed")
+        raise HTTPException(status_code=500, detail="Watchlist run failed.") from exc
 
 
 @app.get("/audit-events")
@@ -395,7 +454,15 @@ def stream_events() -> StreamingResponse:
         finally:
             event_bus.unsubscribe(subscriber)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/v1/report/cybercell/preview")
@@ -407,7 +474,8 @@ def preview_cyber_cell_report(payload: CyberCellReportRequest, request: Request)
     except CyberCellEmailError as exc:
         raise HTTPException(status_code=400, detail={"message": str(exc), "reasons": [str(exc)]}) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Cyber cell report preview failed: {exc}") from exc
+        logger.exception("Cyber cell report preview failed")
+        raise HTTPException(status_code=500, detail="Cyber cell report preview failed.") from exc
 
 
 @app.get("/api/v1/report/cybercell/status")
@@ -426,21 +494,26 @@ def send_cyber_cell_report(payload: CyberCellReportRequest, request: Request) ->
                 "audit_id": response.get("audit_id"),
                 "timestamp": response.get("timestamp"),
                 "delivery_mode": response.get("delivery_mode"),
-                "sent_to": response.get("sent_to", []),
+                "sent_to_count": len(response.get("sent_to", [])),
                 "report_id": response.get("report_id"),
                 "verification_url": response.get("verification_url"),
             }
         )
         return response
     except CyberCellValidationError as exc:
-        event_bus.publish({"event_type": "cyber_cell_report_failed", "action": "failed", "message": exc.message})
+        event_bus.publish(
+            {"event_type": "cyber_cell_report_failed", "action": "failed", "message": "Report validation failed."}
+        )
         raise HTTPException(status_code=exc.status_code, detail={"message": exc.message, "reasons": exc.reasons}) from exc
     except CyberCellEmailError as exc:
-        event_bus.publish({"event_type": "cyber_cell_report_failed", "action": "failed", "message": str(exc)})
+        event_bus.publish(
+            {"event_type": "cyber_cell_report_failed", "action": "failed", "message": "Report delivery validation failed."}
+        )
         raise HTTPException(status_code=400, detail={"message": str(exc), "reasons": [str(exc)]}) from exc
     except Exception as exc:
-        event_bus.publish({"event_type": "cyber_cell_report_failed", "action": "failed", "message": str(exc)})
-        raise HTTPException(status_code=500, detail=f"Cyber cell report send failed: {exc}") from exc
+        logger.exception("Cyber cell report send failed")
+        event_bus.publish({"event_type": "cyber_cell_report_failed", "action": "failed", "message": "Report delivery failed."})
+        raise HTTPException(status_code=500, detail="Cyber cell report send failed.") from exc
 
 
 @app.get("/api/v1/verify/report/{report_id}")
@@ -468,7 +541,8 @@ async def verify_uploaded_report(report_id: str, file: UploadFile = File(...)) -
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Signed report not found.") from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Report verification failed: {exc}") from exc
+        logger.exception("Report verification failed")
+        raise HTTPException(status_code=500, detail="Report verification failed.") from exc
 
 
 if __name__ == "__main__":

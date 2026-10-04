@@ -16,7 +16,7 @@ from intelligence.sensitive_detector import detect_sensitive_data
 from intelligence.scoring import score_case
 from intelligence.verification_engine import compute_verification_status
 from intelligence.validators import filter_pattern_matches, validate_entities
-from utils.config import LABELS, THREAT_TEMPLATES
+from utils.config import LABELS, MODEL_ALLOW_RUNTIME_DOWNLOADS, THREAT_TEMPLATES
 from utils.db import MongoManager
 from utils.intel_enrichment import (
     correlate_alerts,
@@ -1164,6 +1164,8 @@ class ThreatIntelligenceEngine:
             try:
                 self._nlp = spacy.load("en_core_web_sm")
             except OSError:
+                if not MODEL_ALLOW_RUNTIME_DOWNLOADS:
+                    return None
                 from spacy.cli import download
 
                 download("en_core_web_sm")
@@ -1180,7 +1182,10 @@ class ThreatIntelligenceEngine:
         try:
             from sentence_transformers import SentenceTransformer
 
-            self._semantic_model = SentenceTransformer("all-MiniLM-L6-v2")
+            self._semantic_model = SentenceTransformer(
+                "all-MiniLM-L6-v2",
+                local_files_only=not MODEL_ALLOW_RUNTIME_DOWNLOADS,
+            )
             return self._semantic_model
         except Exception:
             self._semantic_model = None

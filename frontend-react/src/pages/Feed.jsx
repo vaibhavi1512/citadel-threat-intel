@@ -17,6 +17,7 @@ import {
   getMonitoringStats,
   getWatchlists,
   resolveApiBaseUrl,
+  getAuthToken,
   runWatchlistNow,
   updateCase,
   updateWatchlist,
@@ -143,33 +144,65 @@ function Feed() {
   }, [selectedCaseId])
 
   useEffect(() => {
-    const eventSource = new EventSource(`${resolveApiBaseUrl()}/events/stream`)
-
-    eventSource.onopen = () => setLiveState('live')
-    eventSource.onmessage = async (event) => {
-      try {
-        const payload = JSON.parse(event.data)
-        if (payload.event_type === 'case_updated') {
-          setToast(`Case ${payload.action === 'created' ? 'created' : 'updated'}: ${payload.case?.title || 'exposure case'}`)
-          await loadMonitoring()
-        } else if (payload.event_type === 'watchlist_error') {
-          setToast(payload.message || 'Watchlist run failed.')
-        } else if (payload.event_type === 'cyber_cell_report_sent') {
-          setToast(`Cyber cell report sent ${payload.delivery_mode === 'live' ? 'with live email delivery' : 'in mock mode'}.`)
-          await loadMonitoring()
-        } else if (payload.event_type === 'cyber_cell_report_failed') {
-          setToast(payload.message || 'Cyber cell report send failed.')
-        }
-      } catch {
-        setLiveState('degraded')
+    let stopped = false
+    const controller = new AbortController()
+    const handlePayload = async (payload) => {
+      if (payload.event_type === 'case_updated') {
+        setToast(`Case ${payload.action === 'created' ? 'created' : 'updated'}: ${payload.case?.title || 'exposure case'}`)
+        await loadMonitoring()
+      } else if (payload.event_type === 'watchlist_error') {
+        setToast(payload.message || 'Watchlist run failed.')
+      } else if (payload.event_type === 'cyber_cell_report_sent') {
+        setToast(`Cyber cell report sent ${payload.delivery_mode === 'live' ? 'with live email delivery' : 'in mock mode'}.`)
+        await loadMonitoring()
+      } else if (payload.event_type === 'cyber_cell_report_failed') {
+        setToast(payload.message || 'Cyber cell report send failed.')
       }
     }
-    eventSource.onerror = () => {
-      setLiveState('degraded')
+    const connect = async () => {
+      let retryDelay = 1000
+      while (!stopped) {
+        try {
+          const token = getAuthToken()
+          const response = await fetch(`${resolveApiBaseUrl()}/events/stream`, {
+            headers: token ? { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' } : { Accept: 'text/event-stream' },
+            signal: controller.signal,
+          })
+          if (response.status === 401) {
+            window.sessionStorage.removeItem('citadel_access_token')
+            window.dispatchEvent(new Event('citadel:session-expired'))
+            throw new Error('Session expired')
+          }
+          if (!response.ok || !response.body) throw new Error('Stream unavailable')
+          setLiveState('live')
+          retryDelay = 1000
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+          let pending = ''
+          while (!stopped) {
+            const { value, done } = await reader.read()
+            if (done) break
+            pending += decoder.decode(value, { stream: true })
+            const frames = pending.split(/\r?\n\r?\n/)
+            pending = frames.pop() || ''
+            for (const frame of frames) {
+              const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n')
+              if (!data || data === '{}') continue
+              try { await handlePayload(JSON.parse(data)) } catch { setLiveState('degraded') }
+            }
+          }
+        } catch (streamError) {
+          if (stopped || streamError.name === 'AbortError') break
+          setLiveState('degraded')
+        }
+        if (!stopped) await new Promise((resolve) => window.setTimeout(resolve, retryDelay))
+        retryDelay = Math.min(retryDelay * 2, 15000)
+      }
     }
-
+    connect()
     return () => {
-      eventSource.close()
+      stopped = true
+      controller.abort()
     }
   }, [selectedCaseId, filters.status, filters.priority, filters.search])
 
